@@ -1,0 +1,415 @@
+---
+title: "gsx2 figure 7"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+install packages
+
+```{r}
+suppressPackageStartupMessages({
+  install.packages("BiocManager")
+  install.packages("Seurat")
+  install.packages("Signac")
+  install.packages("dplyr")
+  install.packages("ggplot2")
+  install.packages("ggsci")
+  install.packages("ggraph")
+  install.packages("ggseqlogo")
+  install.packages("patchwork")
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  if (!require(ReactomeGSA))
+    BiocManager::install("ReactomeGSA")
+  BiocManager::install('BSgenome.Drerio.UCSC.danRer11')
+  BiocManager::install('rtracklayer')
+  BiocManager::install('stringr')
+  BiocManager::install('GenomicRanges')
+  BiocManager::install('GenomeInfoDB')
+  BiocManager::install('GenomicFeatures')
+  install.packages("tidyverse")
+  install.packages('Matrix')
+  BiocManager::install('GenomeInfoDb')
+  BiocManager::install('TFBSTools')
+  BiocManager::install('JASPAR2020')
+  install.packages("devtools")
+  install.packages("doParallel")
+  devtools::install_github('quadbio/Pando')
+})
+```
+
+
+Pando: GRN centered around gsx2
+```{r}
+library(Pando)
+library(Seurat)
+library(Signac)
+library(patchwork)
+library(tidyverse)
+library('BSgenome.Drerio.UCSC.danRer11')
+library(ggsci)
+
+olig2_36hpf <- readRDS(file = "/Users/kimarena16/Desktop/data/olig2_36hpf.RDS")
+DefaultAssay(olig2_36hpf) <- "RNA"
+olig2_36hpf <- NormalizeData(olig2_36hpf)
+olig2_36hpf <- FindVariableFeatures(olig2_36hpf, assay='RNA')
+olig2_36hpf <- ScaleData(olig2_36hpf, features = rownames(olig2_36hpf))
+DefaultAssay(olig2_36hpf) <- "peaks"
+olig2_36hpf <- RegionStats(olig2_36hpf, genome = BSgenome.Drerio.UCSC.danRer11)
+olig2_36hpf <- LinkPeaks(
+ object = olig2_36hpf,
+ peak.assay = "peaks",
+ expression.assay = "RNA")
+
+DefaultAssay(olig2_36hpf) <- "peaks"
+Idents(olig2_36hpf) <- "wsnn_res.0.8"
+da_peaks <- FindMarkers(
+  object = olig2_36hpf,
+  ident.1 = c('18'), #pre-OPC is cluster 18
+  only.pos = TRUE,
+  test.use = 'LR',
+  min.pct = 0.05,
+  latent.vars = 'nCount_peaks'
+)
+top.da.peak <- da_peaks[da_peaks$p_val < 0.005 & da_peaks$pct.1 > 0.2, ]
+dim(da_peaks)
+dim(top.da.peak)
+head(da_peaks)
+
+da.gr <- StringToGRanges(rownames(da_peaks)) 
+linked.gr <- StringToGRanges(Links(olig2_36hpf[['peaks']])$peak) 
+da.gr
+linked.gr
+
+regionsOfInterest <- subsetByOverlaps(da.gr, linked.gr)
+regionsOfInterest
+
+olig2_36hpf <- initiate_grn(
+    olig2_36hpf,
+    rna_assay = 'RNA',
+    peak_assay = 'peaks',
+    regions = regionsOfInterest
+)
+
+GetGRN(olig2_36hpf)
+data('motifs')
+load("/Users/kimarena16/Desktop/data/motif2tf.dr.Rdata")
+motifs2 <- motifs[names(motifs) %in% unique(motif2tf.dr$motif)]
+
+olig2_36hpf <- find_motifs(
+    olig2_36hpf, 
+    pfm = motifs2, 
+    motif_tfs = motif2tf.dr,
+    genome = BSgenome.Drerio.UCSC.danRer11
+)
+
+regions <- NetworkRegions(olig2_36hpf)
+regions@ranges
+regions@motifs@data[1:5,1:5]
+
+TFs <- NetworkTFs(olig2_36hpf)
+head(TFs)
+
+library(doParallel)
+registerDoParallel(4)
+
+olig2_36hpf <- infer_grn(
+    olig2_36hpf,
+    peak_to_gene_method = 'Signac',
+    parallel = TRUE
+)
+GetGRN(olig2_36hpf)
+GetNetwork(olig2_36hpf)
+
+coef(olig2_36hpf)
+pre_opc_targets <- coef(olig2_36hpf)
+
+olig2_36hpf <- find_modules(
+    olig2_36hpf, 
+    p_thresh = 0.05,
+    nvar_thresh = 2, 
+    min_genes_per_module = 1, 
+    rsq_thresh = 0.1
+)
+
+modules <- NetworkModules(olig2_36hpf) 
+modules@meta
+
+plot_gof(olig2_36hpf, point_size=3)
+plot_module_metrics(olig2_36hpf)
+
+olig2_36hpf <- get_network_graph(olig2_36hpf)
+olig2_36hpf <- get_network_graph(
+    olig2_36hpf,
+    graph_name = 'full_graph',
+)
+olig2_36hpf <- get_tf_network(olig2_36hpf, tf='gsx2', graph='full_graph', keep_all_edges = F)
+TF_GRN <- plot_tf_network(olig2_36hpf, tf='gsx2', edge_color = c(`-1` = 'gray', `1` = 'orange'),
+    circular = T, graph= "full_graph",
+    edge_width = 0.5, label_nodes = c("all"), color_edges = T, text_size = 15)
+TF_GRN
+ggsave(filename="36hpf_preOPC_gsx2_GRN_circular.pdf",plot=TF_GRN, width = 10, height = 10)
+```
+Gsx2 motif logo
+```{r}
+library(JASPAR2020)
+library(TFBSTools)
+library(ggseqlogo)
+
+# Get the motif
+pfm <- getMatrixByID(JASPAR2020, ID = "MA0893.1")
+
+# Extract matrix from PFMatrix object
+pfm_matrix <- matrix(unlist(pfm@profileMatrix), nrow = 4, byrow = FALSE)
+rownames(pfm_matrix) <- c("A", "C", "G", "T")
+
+# Plot logo in bits (information content)
+ggseqlogo(pfm_matrix, method = "bits")
+pdf("gsx2_motif_logo.pdf", width = 6, height = 4)  # Adjust size as needed
+ggseqlogo(pfm_matrix, method = "bits")
+dev.off()
+
+```
+predicted gsx2 targets
+```{r}
+library(Signac)
+library(Seurat)
+library(JASPAR2020)
+library(TFBSTools)
+library(BSgenome.Drerio.UCSC.danRer11)
+library(GenomicRanges)
+
+olig2_36hpf <- readRDS(file = "/Users/kimarena16/Desktop/data/olig2_36hpf.RDS")
+#1.Find peaks with gsx2 motif
+pfm <- getMatrixSet(
+  JASPAR2020,
+  opts = list(tax_group = "vertebrates", all_versions = TRUE)
+)
+
+olig2_36hpf <- AddMotifs(
+  object = olig2_36hpf,
+  genome = BSgenome.Drerio.UCSC.danRer11,
+  pfm = pfm
+)
+
+motif_obj <- olig2_36hpf[["peaks"]]@motifs
+
+motif_names <- motif_obj@motif.names
+
+gsx2_ids <- names(motif_names)[tolower(motif_names) %in% c("gsx2")]
+
+motif_mat <- motif_obj@data
+
+gsx2_peaks_logical <- rowSums(motif_mat[, gsx2_ids, drop = FALSE]) > 0
+
+gsx2_peaks <- rownames(motif_mat)[gsx2_peaks_logical]
+
+length(gsx2_peaks)
+
+gsx2_peak_gr <- StringToGRanges(gsx2_peaks, sep = c("-", "-"))
+
+#2. Filter for peaks accessible in pre-OPCs
+
+library(Matrix)
+
+preopc_cells <- WhichCells(olig2_36hpf, idents = "pre-OPC")
+
+peak_access_mat <- GetAssayData(olig2_36hpf, assay = "peaks", layer = "data")
+peaks_found <- gsx2_peaks %in% rownames(peak_access_mat)
+gsx2_peaks_found <- gsx2_peaks[peaks_found]
+
+peak_access_preopc <- peak_access_mat[gsx2_peaks_found, preopc_cells, drop = FALSE]
+
+mean_access_preopc <- Matrix::rowMeans(peak_access_preopc)
+
+accessible_peaks <- gsx2_peaks_found[mean_access_preopc > 0]
+
+length(accessible_peaks)
+head(accessible_peaks)
+
+#3. Link peaks with gsx2 motifs that are accessible in pre-OPCs to genes
+
+library(GenomeInfoDb)
+library(GenomicFeatures)
+library(rtracklayer)
+
+gtf_file <- "/Users/kimarena16/Desktop/data/multiomics 24/Danio_rerio.GRCz11.111.gtf" 
+gtf <- import(gtf_file)
+
+genes_gr <- gtf[gtf$type == "gene"]
+peak_gr <- StringToGRanges(accessible_peaks, sep = c("-", "-"))
+
+seqlevelsStyle(peak_gr) <- "UCSC"
+seqlevelsStyle(genes_gr) <- "UCSC"
+
+nearest_hits <- distanceToNearest(peak_gr, genes_gr)
+distances <- mcols(nearest_hits)$distance
+
+valid_hits <- distances <= 50000
+nearest_hits <- nearest_hits[valid_hits]
+names(peak_gr) <- paste0(seqnames(peak_gr), "-", start(peak_gr), "-", end(peak_gr))
+
+linked_peaks <- peak_gr[queryHits(nearest_hits)]
+linked_genes <- genes_gr[subjectHits(nearest_hits)]
+
+peak_gene_links <- data.frame(
+  peak = names(linked_peaks),
+  gene = linked_genes$gene_name,
+  distance = distances[valid_hits],
+  stringsAsFactors = FALSE
+)
+
+head(peak_gene_links)
+table(seqnames(linked_peaks))
+unique(seqnames(genes_gr))
+unique(seqnames(peak_gr))
+table(seqnames(peak_gr))
+table(is.na(mcols(genes_gr)$gene_name), seqnames(genes_gr))
+
+#4. Of the genes that are linked to accessible peaks, which are expressed in pre-OPCs
+
+expr_mat <- GetAssayData(olig2_36hpf, assay = "SCT", layer = "data")
+
+genes_of_interest <- unique(peak_gene_links$gene)
+genes_present <- genes_of_interest[genes_of_interest %in% rownames(expr_mat)]
+
+expr_sub <- expr_mat[genes_present, preopc_cells, drop = FALSE]
+
+avg_expr_preopc <- Matrix::rowMeans(expr_sub)
+
+expressed_genes <- names(avg_expr_preopc[avg_expr_preopc > 0.1])
+
+filtered_links <- peak_gene_links[peak_gene_links$gene %in% expressed_genes, ]
+filtered_links
+
+filtered_links$avg_expr_preopc <- avg_expr_preopc[filtered_links$gene]
+
+print(head(filtered_links, 50))
+
+top_links <- filtered_links[order(-filtered_links$avg_expr_preopc), ]
+
+top_30_links <- head(top_links, 30)
+
+print(top_30_links)
+
+cutoff <- quantile(filtered_links$avg_expr_preopc, 0.75)
+
+top_quartile_links <- filtered_links[filtered_links$avg_expr_preopc > cutoff, ]
+print(top_quartile_links)
+
+DefaultAssay(olig2_36hpf) <- "SCT"
+de_preopc <- FindMarkers(
+  object = olig2_36hpf,
+  ident.1 = "pre-OPC",
+  ident.2 = NULL,             
+  min.pct = 0.1,             
+  logfc.threshold = 0.25     
+)
+de_preopc
+de_genes_preopc <- rownames(de_preopc)[de_preopc$p_val_adj < 0.05 & de_preopc$avg_log2FC > 0.25]
+filtered_links <- subset(top_quartile_links, gene %in% de_genes_preopc)
+head(filtered_links)
+filtered_links
+
+#5. Plot network of potential gsx2 targets
+library(tidygraph)
+library(ggraph)
+library(ggplot2)
+
+edges <- data.frame(
+  from = "gsx2",
+  to = filtered_links$gene
+)
+
+nodes <- data.frame(
+  name = unique(c(edges$from, edges$to))
+)
+
+nodes$avg_expr_preopc <- ifelse(
+  nodes$name == "gsx2",
+  NA,
+  filtered_links$avg_expr_preopc[match(nodes$name, filtered_links$gene)]
+)
+
+g <- tbl_graph(nodes = nodes, edges = edges, directed = TRUE)
+
+g <- g %>%
+  activate(nodes) %>%
+  mutate(
+    avg_expr_preopc = avg_expr_preopc,
+    size = ifelse(name == "gsx2", 6, 3 + 5 * (avg_expr_preopc / max(avg_expr_preopc, na.rm = TRUE))),
+    color = ifelse(name == "gsx2", "GSX2", "Target")
+  )
+
+g %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(
+    arrow = arrow(length = unit(4, 'mm')),
+    end_cap = circle(3, 'mm'),
+    alpha = 0.5
+  ) +
+  geom_node_point(aes(
+    color = color,   # Use the color column you already made in the graph nodes
+    size = size      # Use the size column you already made in the graph nodes
+  ), alpha = 0.9) +
+  geom_node_text(aes(label = name), repel = TRUE, size = 6) +  # bigger node label font
+  scale_color_manual(values = c("GSX2" = "tomato", "Target" = "steelblue")) +
+  theme_void() +
+  labs(title = "GRN: GSX2 Targets in pre-OPCs") +
+  theme(
+    plot.title = element_text(size = 18, face = "bold"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+ggsave("gsx2_grn_plot.png", width = 14, height = 12)
+```
+
+Dotplot for expression of Gsx2 potential targets across all clusters
+
+```{r}
+grn_genes <- unique(nodes$name)
+grn_targets <- grn_genes[grn_genes %in% rownames(olig2_36hpf[["SCT"]])]
+
+dot <- DotPlot(olig2_36hpf, features = grn_targets) +
+  RotatedAxis() +
+  theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10)) +
+  labs(title = "GRN Target Expression Across Clusters")
+dot
+ggsave("36hpf_gsx2_grn_expression.pdf", dot, width = 20, height = 12, dpi = 300, units = 'in')
+```
+
+Dotplot for expression of Gsx2 potential targets DE in pre-OPCs
+
+```{r}
+olig2_36hpf$preopc_vs_other <- ifelse(Idents(olig2_36hpf) == "pre-OPC", "pre-OPC", "other")
+preOPCvsall <- DotPlot(olig2_36hpf, features = grn_targets, group.by = "preopc_vs_other") +
+  RotatedAxis() +
+  labs(title = "Gsx2 Target Expression: pre-OPC vs Others")
+preOPCvsall
+ggsave("36hpf_gsx2_grn_DE_preOPC.pdf", preOPCvsall, width = 20, height = 5, dpi = 300, units = 'in')
+```
+Heatmap expression of potential Gsx2 targets
+
+```{r}
+heat <- DoHeatmap(olig2_36hpf, features = grn_targets) +
+  labs(title = "Expression of Gsx2 Targets") +
+  scale_fill_gradientn(colors = c("turquoise", "white", "magenta"))
+heat <- DoHeatmap(olig2_36hpf, features = grn_targets) +
+  labs(title = "Expression of Gsx2 Targets") +
+  scale_fill_gradientn(colors = c("turquoise", "white", "magenta")) +
+  theme(
+    axis.text.x = element_text(size = 14),  
+    axis.text.y = element_text(size = 14),  
+    plot.title  = element_text(size = 18) 
+  )
+heat
+ggsave("36hpf_gsx2_grn_expression.png", heat, width = 22, height = 10, dpi = 300, units = 'in')
+```
+
+
+
+
