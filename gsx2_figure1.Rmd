@@ -23,6 +23,14 @@ suppressPackageStartupMessages({
   BiocManager::install('BSgenome.Drerio.UCSC.danRer11')
   BiocManager::install('SparseArray')
   install.packages('Signac')
+  BiocManager::install('slingshot')
+  BiocManager::install('SingleCellExperiment')
+  install.packages("ggrepel")
+  install.packages("dplyr")
+  BiocManager::install('GenomeInfoDb')
+  BiocManager::install('MatrixGenerics')
+  BiocManager::install('matrixStats')
+  BiocManager::install('DelayedMatrixStats')
 })
 ```
 
@@ -73,6 +81,8 @@ Trajectory Analysis 36 hpf NP1->OPC and NP1->MN1
 
 ```{r}
 library(SingleCellExperiment)
+library(dplyr)
+library(GenomicRanges)
 library(slingshot)
 library(ggplot2)
 library(ggrepel)
