@@ -1,0 +1,463 @@
+---
+title: "gsx2 figure 6"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+install packages
+
+```{r}
+suppressPackageStartupMessages({
+  install.packages("BiocManager")
+  install.packages("Seurat")
+  install.packages("Signac")
+  install.packages("dplyr")
+  install.packages("ggplot2")
+  install.packages("patchwork")
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  if (!require(ReactomeGSA))
+    BiocManager::install("ReactomeGSA")
+  BiocManager::install('BSgenome.Drerio.UCSC.danRer11')
+  BiocManager::install('rtracklayer')
+  BiocManager::install('stringr')
+  BiocManager::install('pheatmap')
+  install.packages("tidyverse")
+  install.packages('Matrix')
+  BiocManager::install('GenomeInfoDb')
+  BiocManager::install('TFBSTools')
+  BiocManager::install('JASPAR2020')
+})
+```
+
+
+Candidate NP1->pre-OPC activators
+```{r}
+library(Seurat)
+library(Signac)
+library(dplyr)
+library(ggplot2)
+olig2_36hpf <- readRDS("/Users/kimarena16/Desktop/data/olig2_36hpf.RDS")
+clusters_of_interest <- subset(olig2_36hpf, idents = c("NP1", "pre-OPC"))
+DefaultAssay(clusters_of_interest) <- "SCT"
+all_de_genes <- FindMarkers(clusters_of_interest, 
+                           ident.1 = "pre-OPC", 
+                           ident.2 = "NP1",
+                           logfc.threshold = 0.1,  
+                           min.pct = 0.05,         
+                           test.use = "wilcox")
+upregulated_genes <- all_de_genes[all_de_genes$avg_log2FC > 0 & all_de_genes$p_val_adj < 0.05, ]
+upregulated_genes <- upregulated_genes[order(upregulated_genes$avg_log2FC, decreasing = TRUE), ]
+
+print(paste("Found", nrow(upregulated_genes), "upregulated genes in pre-OPC"))
+head(upregulated_genes, 20)
+
+expr_data <- GetAssayData(clusters_of_interest, layer = "data")
+gsx2_expr <- expr_data["gsx2", ]
+
+correlations <- apply(expr_data, 1, function(gene_expr) {
+  cor(gene_expr, gsx2_expr, use = "complete.obs")
+})
+
+correlations <- correlations[!is.na(correlations)]
+correlations <- sort(correlations, decreasing = TRUE)
+
+top_positive_corr <- head(correlations[correlations > 0], 30)
+print(top_positive_corr)
+
+potential_regulators <- intersect(
+  names(top_positive_corr)[top_positive_corr > 0.3],  
+  rownames(upregulated_genes)[upregulated_genes$avg_log2FC > 0.2]  
+)
+
+print("Potential regulatory candidates (upregulated + correlated):")
+print(potential_regulators)
+
+if(length(potential_regulators) > 0) {
+  candidate_summary <- data.frame(
+    gene = potential_regulators,
+    correlation = correlations[potential_regulators],
+    log2FC = upregulated_genes[potential_regulators, "avg_log2FC"],
+    p_val_adj = upregulated_genes[potential_regulators, "p_val_adj"]
+  )
+  candidate_summary <- candidate_summary[order(candidate_summary$correlation, decreasing = TRUE), ]
+  print(candidate_summary)
+}
+
+create_candidate_summary_plot <- function(candidate_summary, max_genes = 10) {
+  
+  plot_data <- head(candidate_summary, max_genes)
+  plot_data$gene <- factor(plot_data$gene, levels = rev(plot_data$gene))
+  
+  p1 <- ggplot(plot_data, aes(x = gene, y = correlation)) +
+    geom_col(fill = "steelblue", alpha = 0.7) +
+    coord_flip() +
+    labs(title = "Correlation with gsx2", y = "Pearson correlation", x = "") +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 10))
+  
+  p2 <- ggplot(plot_data, aes(x = gene, y = log2FC)) +
+    geom_col(fill = "orange", alpha = 0.7) +
+    coord_flip() +
+    labs(title = "Log2 Fold Change (pre-OPC vs NP1)", y = "Log2 FC", x = "") +
+    theme_minimal() +
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank())
+  
+  plot_data$neg_log_p <- -log10(plot_data$p_val_adj)
+  p3 <- ggplot(plot_data, aes(x = gene, y = neg_log_p)) +
+    geom_col(fill = "darkgreen", alpha = 0.7) +
+    coord_flip() +
+    labs(title = "-Log10(adj. p-value)", y = "-Log10(p_adj)", x = "") +
+    theme_minimal() +
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank())
+  
+  combined <- p1 | p2 | p3
+  combined + plot_annotation(title = "Candidate gsx2 Activators Summary",
+                            theme = theme(plot.title = element_text(size = 16, face = "bold")))
+}
+library(patchwork)
+
+if(exists("candidate_summary") && nrow(candidate_summary) > 0) {
+  summary_plot <- create_candidate_summary_plot(candidate_summary)
+  print(summary_plot)
+}
+
+pdf("gsx2_candidates_summary_hq.pdf", 
+    width = 18, height = 10,  
+    pointsize = 12,           
+    colormodel = "rgb")       
+print(summary_plot)
+dev.off()
+
+cat("High-quality summary plot saved as 'gsx2_candidates_summary_hq.pdf'\n")
+
+```
+Candidate repressors pre-OPC->OPC
+```{r}
+library(Seurat)
+library(Signac)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+clusters_of_interest <- subset(olig2_36hpf, idents = c("pre-OPC", "OPC"))
+DefaultAssay(clusters_of_interest) <- "SCT"
+
+all_de_genes <- FindMarkers(
+  clusters_of_interest, 
+  ident.1 = "OPC",      
+  ident.2 = "pre-OPC",
+  logfc.threshold = 0.1,
+  min.pct = 0.05,
+  test.use = "wilcox"
+)
+
+upregulated_genes <- all_de_genes[
+  all_de_genes$avg_log2FC > 0 & all_de_genes$p_val_adj < 0.05, 
+]
+upregulated_genes <- upregulated_genes[order(upregulated_genes$avg_log2FC, decreasing = TRUE), ]
+
+print(paste("Found", nrow(upregulated_genes), "genes upregulated in OPC compared to pre-OPC"))
+
+expr_data <- GetAssayData(clusters_of_interest, slot = "data")
+gsx2_expr <- expr_data["gsx2", ]
+
+correlations <- apply(expr_data, 1, function(gene_expr) {
+  cor(gene_expr, gsx2_expr, use = "complete.obs")
+})
+
+correlations <- correlations[!is.na(correlations)]
+correlations <- sort(correlations)  
+
+top_negative_corr <- head(correlations[correlations < 0], 30)
+
+print("Top genes negatively correlated with gsx2:")
+print(top_negative_corr)
+
+potential_repressors <- intersect(
+  names(top_negative_corr), 
+  rownames(upregulated_genes)
+)
+
+print("Potential candidate repressors (upregulated in OPC + negatively correlated):")
+print(potential_repressors)
+
+if(length(potential_repressors) > 0) {
+  candidate_summary <- data.frame(
+    gene = potential_repressors,
+    correlation = correlations[potential_repressors],
+    log2FC = upregulated_genes[potential_repressors, "avg_log2FC"],
+    p_val_adj = upregulated_genes[potential_repressors, "p_val_adj"]
+  )
+  candidate_summary <- candidate_summary[order(candidate_summary$correlation), ]
+  print(candidate_summary)
+}
+
+if(exists("candidate_summary") && nrow(candidate_summary) > 0) {
+  summary_plot <- create_candidate_summary_plot(candidate_summary)
+  print(summary_plot)
+}
+
+pdf("gsx2_repressor_candidates_summary_hq.pdf", 
+    width = 18, height = 10,  # Larger size for better readability
+    pointsize = 12,           # Font size
+    colormodel = "rgb")       # Color model
+print(summary_plot)
+dev.off()
+
+cat("High-quality summary plot saved as 'gsx2_candidates_summary_hq.pdf'\n")
+```
+linked peak plot gsx2
+
+```{r}
+library(Signac)
+library(Seurat)
+library(ReactomeGSA)
+library(BSgenome.Drerio.UCSC.danRer11)
+library(ggplot2)
+DefaultAssay(olig2_36hpf) <- "peaks"
+olig2_36hpf <- RegionStats(olig2_36hpf, genome = BSgenome.Drerio.UCSC.danRer11)
+subset_clusters_36 <- subset(olig2_36hpf, idents = c("NP1", "pre-MNs", "pre-OPC"))
+
+subset_clusters_36 <- LinkPeaks(
+  object = subset_clusters_36,
+  peak.assay = "peaks",
+  expression.assay = "SCT",
+  genes.use = c("gsx2")
+)
+olig2_36hpf@assays[["peaks"]]@fragments[[1]] <- UpdatePath(olig2_36hpf@assays[["peaks"]]@fragments[[1]], "/Users/kimarena16/Desktop/data/olig2_36hpf/atac_fragments.tsv.gz", verbose = TRUE)
+link <- CoveragePlot(
+  object = subset_clusters_36,
+  region = "gsx2",
+  features = "gsx2",
+  expression.assay = "SCT",
+  extend.upstream = 38000,
+  extend.downstream = 38000
+)
+link
+ggsave(filename="gsx2_36hpf_subset.pdf",plot=link, width = 12, height = 8)
+
+```
+
+TF motifs at gsx2 linked peaks
+
+```{r}
+library(Seurat)
+library(Signac)
+library(Matrix)
+library(dplyr)
+library(tidyverse)
+library(JASPAR2020)
+library(TFBSTools)
+
+peaks_of_interest <- c(
+  "chr20-22488535-22489224",
+  "chr20-22522010-22522362",
+  "chr20-22502633-22503163",
+  "chr20-22512448-22512976",
+  "chr20-22498047-22498353",
+  "chr20-22478451-22478815"
+)
+
+motif_obj <- olig2_36hpf[["peaks"]]@motifs
+motif_matrix <- motif_obj@data
+motif_matrix_sub <- motif_obj@data[rownames(motif_obj@data) %in% peaks_of_interest, ]
+motif_ids <- colnames(motif_matrix_sub)
+opts <- list(collection = "CORE", tax_group = "vertebrates")
+pfm_list <- getMatrixSet(JASPAR2020, opts)
+
+jaspar_df <- data.frame(
+  motif_id = names(pfm_list),
+  tf_name = sapply(pfm_list, name),
+  stringsAsFactors = FALSE
+)
+motif_ids <- colnames(motif_matrix_sub)
+matched_tfs <- jaspar_df %>%
+  filter(motif_id %in% motif_ids)
+motif_hits_df <- as.matrix(motif_matrix_sub) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("peak") %>%
+  pivot_longer(cols = -peak, names_to = "motif_id", values_to = "present") %>%
+  filter(present != 0)
+motif_hits_df <- motif_hits_df %>%
+  left_join(matched_tfs, by = "motif_id")
+motif_hits_df <- motif_hits_df %>%
+  filter(!is.na(tf_name))
+
+head(motif_hits_df)
+
+top_motifs <- motif_hits_df %>%
+  count(tf_name, sort = TRUE) %>%
+  slice_max(n, n = 30)
+
+ggplot(top_motifs, aes(x = reorder(tf_name, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "TF", y = "Number of Peaks with Motif", title = "Top 30 TF Motifs in Peaks of Interest") +
+  theme_minimal()
+
+library(rtracklayer)
+
+gtf <- import("/Users/kimarena16/Desktop/data/multiomics 24/Danio_rerio.GRCz11.111.gtf")
+gtf_genes <- unique(mcols(gtf)[, c("gene_name", "gene_id")])
+head(gtf_genes)
+
+library(dplyr)
+library(stringr)
+
+vertebrate_tfs <- unique(toupper(motif_hits_df$tf_name))
+
+gtf_genes$gene_name_lower <- tolower(gtf_genes$gene_name)
+
+mapping_list <- lapply(vertebrate_tfs, function(tf) {
+  matched <- gtf_genes$gene_name[startsWith(gtf_genes$gene_name_lower, tolower(tf))]
+  data.frame(tf_name = tf, zebrafish_genes = paste(matched, collapse = ";"))
+})
+
+mapping_df <- do.call(rbind, mapping_list)
+head(mapping_df)
+
+motif_hits_df$tf_name_upper <- toupper(motif_hits_df$tf_name)
+
+motif_hits_df <- motif_hits_df %>%
+  left_join(mapping_df, by = c("tf_name_upper" = "tf_name"))
+motif_hits_df$tf_name_clean <- toupper(gsub("\\s*\\(.*\\)$", "", motif_hits_df$tf_name))
+
+top_tfs <- top_motifs$tf_name  
+
+top_motif_ids <- unique(motif_hits_df %>% filter(tf_name %in% top_tfs) %>% pull(motif_id))
+
+motif_mat_top <- motif_matrix_sub[, colnames(motif_matrix_sub) %in% top_motif_ids]
+
+motif_id_to_tf <- motif_hits_df %>%
+  filter(motif_id %in% colnames(motif_mat_top)) %>%
+  distinct(motif_id, tf_name) %>%
+  deframe()
+
+colnames(motif_mat_top) <- motif_id_to_tf[colnames(motif_mat_top)]
+
+library(pheatmap)
+
+motif_mat_top_dense <- as.matrix(motif_mat_top)
+
+motif_mat_top_dense <- as.matrix(motif_mat_top)
+
+if (is.logical(motif_mat_top_dense)) {
+  motif_mat_top_dense <- motif_mat_top_dense * 1
+}
+
+motif_mat_top_dense <- apply(motif_mat_top_dense, 2, function(x) as.numeric(as.character(x)))
+rownames(motif_mat_top_dense) <- rownames(motif_mat_top)  # your peak names
+
+pheatmap(
+  motif_mat_top_dense,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  scale = "none",
+  main = "Motif Presence in Peaks of Interest",
+  fontsize_row = 8,
+  fontsize_col = 10
+)
+
+DefaultAssay(olig2_36hpf) <- "SCT"
+
+tf_names         <- colnames(motif_mat_top_dense)
+tf_names_lower   <- tolower(tf_names)
+rna_genes_lower  <- tolower(rownames(olig2_36hpf[["SCT"]]))
+
+tf_names_clean   <- gsub("\\s*\\(.*\\)$", "", tf_names_lower)
+
+tf_to_paralogs <- lapply(tf_names_clean, function(tf) {
+  paralogs <- rna_genes_lower[stringr::str_starts(rna_genes_lower, tf)]
+  if (length(paralogs) == 0) return(NA)
+  paralogs
+})
+names(tf_to_paralogs) <- tf_names_clean
+
+clusters_of_interest <- c("pre-OPC", "OPC", "NP1")
+
+expr_df <- data.frame(row.names = tf_names_lower)  # TFs as rows
+
+for (cl in clusters_of_interest) {
+  cl_cells <- WhichCells(olig2_36hpf, ident = cl)
+  expr_mat <- GetAssayData(olig2_36hpf, assay = "SCT", layer = "data")[, cl_cells]
+
+  avg_vec <- sapply(tf_names_clean, function(tf) {
+    paralogs <- tf_to_paralogs[[tf]]
+    if (is.null(paralogs) || all(is.na(paralogs))) return(0)
+    genes_present <- paralogs[paralogs %in% rownames(expr_mat)]
+    if (length(genes_present) == 0) return(0)
+    mean(rowMeans(expr_mat[genes_present, , drop = FALSE]))
+  })
+
+  expr_df[[cl]] <- avg_vec
+}
+
+colnames(motif_mat_top_dense) <- tolower(colnames(motif_mat_top_dense))
+common_tfs <- intersect(colnames(motif_mat_top_dense), rownames(expr_df))
+motif_mat_filtered <- motif_mat_top_dense[, common_tfs]
+expr_df_filtered <- expr_df[common_tfs, , drop = FALSE]
+
+expr_df_filtered <- apply(expr_df_filtered, 2, function(x){
+  rng <- range(x, na.rm = TRUE)
+  if (diff(rng) == 0) return(rep(0, length(x)))
+  (x - rng[1]) / (rng[2] - rng[1])
+}) %>% as.data.frame()
+
+pheatmap(
+  motif_mat_filtered,
+  cluster_rows  = TRUE,
+  cluster_cols  = TRUE,
+  scale         = "none",
+  main          = "Motif Presence in Peaks of Interest",
+  fontsize_row  = 8,
+  fontsize_col  = 10,
+  color         = colorRampPalette(c("white", "blue"))(50),
+  annotation_col = expr_df_filtered,
+  annotation_colors = list(
+    `pre-OPC` = colorRampPalette(c("white", "mediumpurple"))(50),
+    `OPC`     = colorRampPalette(c("white", "turquoise"))(50),
+    `NP1`     = colorRampPalette(c("white", "salmon"))(50)
+  )
+)
+
+pdf("gsx2_top30_TFmotifs_heatmap_preOPC_OPC_NP1_express_.pdf", width=10, height=5)
+pheatmap(
+  motif_mat_filtered,
+  cluster_rows  = TRUE,
+  cluster_cols  = TRUE,
+  scale         = "none",
+  main          = "Motif Presence in Peaks of Interest",
+  fontsize_row  = 8,
+  fontsize_col  = 10,
+  color         = colorRampPalette(c("white", "blue"))(50),
+  annotation_col = expr_df_filtered,
+  annotation_colors = list(
+    `pre-OPC` = colorRampPalette(c("white", "mediumpurple"))(50),
+    `OPC`     = colorRampPalette(c("white", "turquoise"))(50),
+    `NP1`     = colorRampPalette(c("white", "salmon"))(50)
+  )
+)
+dev.off()
+
+```
+
+Dotplot Gsx2 and Ascl1a
+
+```{r}
+library(Seurat)
+library(ggplot2)
+DefaultAssay(olig2_36hpf) <- "SCT"
+genes_of_interest <- c("gsx2", "ascl1a")
+dotplot<- DotPlot(olig2_36hpf, features = genes_of_interest)
+dotplot
+ggsave(filename="36hpf_dotplot_gsx2_ascl1a.pdf",plot=dotplot, width = 9, height = 4.5, dpi = 300, units = "in")
+```
+
+
+
+
